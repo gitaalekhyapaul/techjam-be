@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  # MongoDB
+  mongodb:
+    image: mongo:7.0
+    container_name: tiktok-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: tiktok-techjam
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - tiktok-network
+
+  # Redis
+  redis:
+    image: redis:7.2-alpine
+    container_name: tiktok-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - tiktok-network
+
+  # API Server
+  api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tiktok-api-server
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - MONGODB_URI=mongodb://admin:password123@mongodb:27017/tiktok-techjam?authSource=admin
+      - REDIS_URL=redis://redis:6379
+      - RPC_URL=http://host.docker.internal:8545
+      - CHAIN_ID=31337
+      - PRIVATE_KEY=${PRIVATE_KEY}
+      - TK_CONTRACT_ADDRESS=${TK_CONTRACT_ADDRESS}
+      - TKI_CONTRACT_ADDRESS=${TKI_CONTRACT_ADDRESS}
+      - REVENUE_CONTROLLER_ADDRESS=${REVENUE_CONTROLLER_ADDRESS}
+      - VALIDATOR_ADDRESS=${VALIDATOR_ADDRESS}
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-here}
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - tiktok-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Job Server
+  job-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.job
+    container_name: tiktok-job-server
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - JOB_SERVER_PORT=3001
+      - MONGODB_URI=mongodb://admin:password123@mongodb:27017/tiktok-techjam?authSource=admin
+      - REDIS_URL=redis://redis:6379
+      - RPC_URL=http://host.docker.internal:8545
+      - CHAIN_ID=31337
+      - PRIVATE_KEY=${PRIVATE_KEY}
+      - TK_CONTRACT_ADDRESS=${TK_CONTRACT_ADDRESS}
+      - TKI_CONTRACT_ADDRESS=${TKI_CONTRACT_ADDRESS}
+      - REVENUE_CONTROLLER_ADDRESS=${REVENUE_CONTROLLER_ADDRESS}
+      - VALIDATOR_ADDRESS=${VALIDATOR_ADDRESS}
+      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-here}
+    volumes:
+      - ./logs:/app/logs
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - tiktok-network
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  tiktok-network:
+    driver: bridge
