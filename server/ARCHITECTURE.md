@@ -336,37 +336,44 @@ graph TB
 ## Key Components
 
 ### 1. **API Server** (`src/index.ts`)
+
 - Express.js HTTP server
 - Authentication middleware
 - Route handlers for contracts
 - Security middleware (Helmet, CORS, rate limiting)
 
 ### 2. **Job Server** (`src/job-server.ts`)
+
 - Background job processing
 - Cron job scheduling
 - Blockchain operation queuing
 
 ### 3. **Smart Contract Integration** (`src/config/blockchain.ts`)
+
 - Viem client configuration
 - Contract ABI definitions
 - Blockchain operation methods
 
 ### 4. **Job Queues** (`src/jobs/queue.ts`)
+
 - BullMQ queue management
 - Worker processes
 - Job scheduling and retry logic
 
 ### 5. **Cron Jobs** (`src/jobs/cron.ts`)
+
 - Automated settlement processing
 - Interest accrual
 - Intent approval automation
 
 ### 6. **Data Models** (`src/models/`)
+
 - User authentication
 - Intent tracking
 - Payment/withdrawal records
 
 ### 7. **API Routes** (`src/routes/`)
+
 - Authentication endpoints
 - Contract interaction endpoints
 - Balance and intent queries
