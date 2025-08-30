@@ -1,0 +1,69 @@
+sequenceDiagram
+    %% Actors
+    participant UA as Alice (User A)
+    participant UB as Bob (User B)
+    participant CR as Creator
+    participant RC as RevenueController
+    participant TK as TK (Stablecoin)
+    participant TKI as TKI (Interest/Clap)
+    participant DV as Delegation Validator (ERC-7710)
+
+    %% --- On-ramps (fiat -> TK) ---
+    UA->>RC: depositFiat(100)
+    RC->>TK: mint(UA, 100 TK)
+    RC->>TKI: (optional) mint(UA, bonus TKI)
+
+    UB->>RC: depositFiat(50)
+    RC->>TK: mint(UB, 50 TK)
+    RC->>TKI: (optional) mint(UB, bonus TKI)
+
+    %% --- Global time advancement (daily / lazy) ---
+    Note over RC: pokeAccrual() (keeper/cron or lazy)\nupdates globalIndex by elapsed time
+
+    %% --- Accrue on demand (read/mint) ---
+    UA->>RC: accrueFor(UA)
+    RC->>TKI: mint(UA, pending TKI)
+    UB->>RC: accrueFor(UB)
+    RC->>TKI: mint(UB, pending TKI)
+
+    %% --- Alice claps Creator (TKI) with ERC-7710 delegation ---
+    UA->>RC: submitClap(CR, 40 TKI, delegation)
+    RC->>DV: isDelegationValid(UA, TKI, transfer, 40, delegation)?
+    DV-->>RC: true
+    RC->>RC: reserve(UA, 40 TKI);
+    RC->>RC: logIntent(0, "Clap", false);
+
+    %% --- Bob gifts Creator (TK) with ERC-7710 delegation ---
+    UB->>RC: submitGift(CR, 10 TK, delegation)
+    RC->>DV: isDelegationValid(UB, TK, transfer, 10, delegation)?
+    DV-->>RC: true
+    RC->>RC: reserve(UB, 10 TK);
+    RC->>RC: logIntent(1, "Gift", false);
+
+    %% --- Optional: more fans queue intents (batched) ---
+    Note over RC: More intents can be queued and reserved\nwithout moving tokens yet
+
+    %% --- AML / fraud approval step (off-chain decision, on-chain flag) ---
+    RC->>RC: approveIntents([0,1], [true,true]);
+
+    %% --- Settlement window elapses ---
+    Note over RC: settleEpoch([0,1], [CR])\n(only active intent IDs & creators)
+
+    %% Final accrual for creator before conversion
+    RC->>RC: (if due) pokeAccrual();
+    RC->>RC: accrueFor(CR);  %% mint any pending TKI to CR before conversion
+
+    %% Execute approved intents (operator transfers)
+    RC->>TKI: operatorTransfer(UA → CR, 40 TKI);
+    RC->>TK: operatorTransfer(UB → CR, 10 TK);
+    RC->>RC: release reservations for UA/UB; 
+    RC->>RC: mark intents settled;
+
+    %% Convert creator TKI -> TK at 100:1 (floored)
+    RC->>TKI: controllerBurn(CR, N * 100 TKI);
+    RC->>TK: mint(CR, N TK);
+
+    %% Balances after settlement
+    CR->>CR: Final: TK increased (gifts + TKI->TK)\nTKI burned;
+    UA->>UA: TKI decreased by 40 (reserved then transferred);
+    UB->>UB: TK decreased by 10 (reserved then transferred);

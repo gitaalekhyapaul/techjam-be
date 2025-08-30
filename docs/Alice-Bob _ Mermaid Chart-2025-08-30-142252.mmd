@@ -1,0 +1,36 @@
+sequenceDiagram
+    participant U as User
+    participant C as Creator
+    participant RC as RevenueController
+    participant TK as TK (Stablecoin)
+    participant TKI as TKI (Interest/Clap)
+
+    %% Deposit
+    U->>RC: depositFiat(100)
+    RC->>TK: mint(U, 100 TK)
+    RC->>TKI: mint(U, (bonus) TKI)
+
+    %% Interest accrual (global)
+    Note over RC: pokeAccrual() (daily cron or lazy)<br/> updates globalIndex
+    RC->>RC: globalIndex += rate * elapsed
+
+    %% Accrue for user
+    U->>RC: accrueFor(U)
+    RC->>TKI: mint(U, pending TKI)
+
+    %% Clap intent
+    U->>RC: submitClap(C, 50 TKI, delegation)
+    RC->>RC: reserve(U, 50 TKI)
+    RC->>RC: store Intent{id=0, approved=false}
+
+    %% AML approval
+    RC->>RC: approveIntents([0], [true])
+
+    %% Settlement period ends
+    Note over RC: settleEpoch([0], [C])
+    RC->>RC: accrueFor(C)  <!-- final TKI credit -->
+    RC->>TKI: operatorTransfer(U → C, 50 TKI)
+    RC->>TKI: burn(C, N TKI)
+    RC->>TK: mint(C, N/100 TK)
+
+    C->>C: Final balance: TK received<br/> TKI burned
