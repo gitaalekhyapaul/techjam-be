@@ -12,20 +12,18 @@ contract DeployAll is Script {
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address creator = vm.envAddress("CREATOR_ADDR"); // set one demo creator
+        address delegationManager = vm.envAddress("DELEGATION_MANAGER_ADDR");
 
         vm.startBroadcast(pk);
 
-        TK tk = new TK("TikTok USD", "TK");
-        TKI tki = new TKI("TikTok Interest", "TKI");
-
-        // Deploy delegation manager
-        DelegationManager dm = new DelegationManager(msg.sender);
+        TK tk = new TK("Sparks OTC", "TK");
+        TKI tki = new TKI("Hypes OTC", "TKI");
 
         // rebate 2% (200 bps), max 10% (1000 bps)
         RevenueController rc = new RevenueController(
             address(tk), // tk
             address(tki), // tki
-            address(dm), // delegationManager
+            delegationManager, // delegationManager
             200, // rebateMonthlyBps
             1000, // maxRebateMonthlyBps
             30 seconds, // secondsPerMonth
@@ -46,8 +44,6 @@ contract DeployAll is Script {
         tki.setActorType(creator, TKI.ActorType.Creator);
 
         // Optional initial config tweaks
-        rc.setSettlementPeriod(60 seconds);
-        rc.setAccrualInterval(30 seconds);
         rc.setOnRampTkiPerTk(0); // no bonus
 
         vm.stopBroadcast();
@@ -55,6 +51,6 @@ contract DeployAll is Script {
         console.log("TK:  ", address(tk));
         console.log("TKI: ", address(tki));
         console.log("RC:  ", address(rc));
-        console.log("DelegationManager: ", address(dm));
+        console.log("DelegationManager: ", delegationManager);
     }
 }
