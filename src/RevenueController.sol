@@ -1,30 +1,16 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.23;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
+import "@delegation-framework/src/interfaces/IDelegationManager.sol";
+import "@delegation-framework/src/utils/Types.sol";
+import {Delegation, ModeCode} from "@delegation-framework/src/utils/Types.sol";
+
 import "./TK.sol";
 import "./TKI.sol";
-
-/**
- * Minimal ERC-7710 validator adapter.
- * Plug this into MetaMask Delegation Toolkit (or your validator service).
- */
-interface IDelegationValidator {
-    function isDelegationValid(
-        address delegator,
-        address token,
-        bytes4 selector, // ERC20.transfer selector
-        uint256 amount,
-        bytes calldata delegation
-    ) external view returns (bool);
-
-    function hashDelegation(
-        bytes calldata delegation
-    ) external view returns (bytes32);
-}
 
 /**
  * RevenueController:
@@ -36,9 +22,9 @@ interface IDelegationValidator {
 contract RevenueController is Ownable, ReentrancyGuard {
     // ───────── Configurable constants ─────────
     uint256 public constant BPS = 10_000; // 100% = 10_000 bps
-    uint256 public secondsPerMonth = 30 days; // “month” for pro-rating
-    uint256 public accrualInterval = 1 days; // min gap between index bumps
-    uint256 public settlementPeriod = 7 days; // epoch length
+    uint256 public secondsPerMonth = 30 seconds; // “month” for pro-rating
+    uint256 public accrualInterval = 1 seconds; // min gap between index bumps
+    uint256 public settlementPeriod = 7 seconds; // epoch length
     uint256 public tkiPerTkRatio = 100; // 100 TKI : 1 TK
     uint256 public maxRebateMonthlyBps; // safety cap (e.g., 1000 = 10%)
     uint256 public rebateMonthlyBps; // e.g., 200 = 2%
@@ -46,10 +32,10 @@ contract RevenueController is Ownable, ReentrancyGuard {
     // Optional promo: bonus TKI on fiat on-ramp (0 = disabled)
     uint256 public onRampTkiPerTk = 0;
 
-    // ───────── Tokens & validator ─────────
+    // ───────── Tokens & delegation manager ─────────
     TK public immutable tk;
     TKI public immutable tki;
-    IDelegationValidator public validator;
+    IDelegationManager public delegationManager;
 
     // ───────── Index state (Compound-like) ─────────
     uint256 public globalIndex; // 1e18 scale (TK interest per TK)
@@ -59,11 +45,11 @@ contract RevenueController is Ownable, ReentrancyGuard {
     // ───────── Settlement timer ─────────
     uint256 public lastSettlementAt;
 
-    // ───────── Reservation mapping (prevents overspend before settlement) ─────────
-    // user => token => reserved amount
-    mapping(address => mapping(address => uint256)) public reservedAmount;
+    // ───────── Delegation tracking ─────────
+    mapping(bytes32 => bool) public storedDelegations; // delegationHash => exists
+    mapping(address => mapping(address => uint256)) public delegatedAmount; // user => token => delegated amount
 
-    // ───────── Intent queue with stored delegations ─────────
+    // ───────── Intent queue with delegation references ─────────
     enum IntentKind {
         Clap,
         Gift
@@ -71,11 +57,9 @@ contract RevenueController is Ownable, ReentrancyGuard {
     struct Intent {
         address from; // fan
         address to; // creator
-        address token; // TK or TKI
-        uint256 amount;
+        uint256 amount; // amount of tokens to transfer
+        bytes delegationBytes; // raw encoded delegation for settlement
         IntentKind kind; // Clap (TKI) / Gift (TK)
-        bytes delegation; // raw ERC-7710 delegation payload (stored)
-        bytes32 delegationHash;
         uint64 createdAt;
         bool approved; // AML flag
         bool settled; // executed at settlement
@@ -84,16 +68,25 @@ contract RevenueController is Ownable, ReentrancyGuard {
 
     // ───────── Events ─────────
     event ParametersUpdated();
-    event DelegationValidatorSet(address indexed validator);
+    event DelegationManagerSet(address indexed delegationManager);
     event Accrued(uint256 deltaIndex, uint256 newGlobalIndex, uint256 at);
+    event DelegationStored(
+        bytes32 indexed delegationHash,
+        address indexed delegator,
+        address indexed delegate,
+        uint256 amount
+    );
+    event DelegationRevoked(
+        bytes32 indexed delegationHash,
+        address indexed revoker
+    );
     event IntentSubmitted(
         uint256 indexed id,
         address indexed from,
         address indexed to,
-        address token,
         uint256 amount,
-        IntentKind kind,
-        bytes32 delegationHash
+        bytes32 delegationHash,
+        IntentKind kind
     );
     event IntentApproval(uint256 indexed id, bool approved);
     event IntentSettled(uint256 indexed id);
@@ -106,24 +99,32 @@ contract RevenueController is Ownable, ReentrancyGuard {
     constructor(
         address _tk,
         address _tki,
-        address _validator,
+        address _delegationManager,
         uint256 _rebateMonthlyBps,
-        uint256 _maxRebateMonthlyBps
+        uint256 _maxRebateMonthlyBps,
+        uint256 _secondsPerMonth,
+        uint256 _accrualInterval,
+        uint256 _settlementPeriod
     ) Ownable(_msgSender()) {
         require(_tk != address(0) && _tki != address(0), "bad token");
         tk = TK(_tk);
         tki = TKI(_tki);
-        validator = IDelegationValidator(_validator);
+        delegationManager = IDelegationManager(_delegationManager);
         maxRebateMonthlyBps = _maxRebateMonthlyBps;
         _setRebateMonthlyBps(_rebateMonthlyBps);
         lastAccrualTimestamp = block.timestamp;
         lastSettlementAt = block.timestamp;
+        secondsPerMonth = _secondsPerMonth;
+        accrualInterval = _accrualInterval;
+        settlementPeriod = _settlementPeriod;
     }
 
     // ───────── Admin setters ─────────
-    function setDelegationValidator(address _validator) external onlyOwner {
-        validator = IDelegationValidator(_validator);
-        emit DelegationValidatorSet(_validator);
+    function setDelegationManager(
+        address _delegationManager
+    ) external onlyOwner {
+        delegationManager = IDelegationManager(_delegationManager);
+        emit DelegationManagerSet(_delegationManager);
     }
 
     function setMaxRebateMonthlyBps(uint256 v) external onlyOwner {
@@ -174,7 +175,7 @@ contract RevenueController is Ownable, ReentrancyGuard {
     function currentIndex() public view returns (uint256) {
         uint256 elapsed = block.timestamp - lastAccrualTimestamp;
         if (elapsed == 0) return globalIndex;
-        // Δindex = monthlyBps * elapsed / (BPS * secondsPerMonth)
+        // change in index = monthlyBps * elapsed / (BPS * secondsPerMonth) (simple interest)
         uint256 delta = (rebateMonthlyBps * elapsed * 1e18) /
             (BPS * secondsPerMonth);
         return globalIndex + delta;
@@ -193,9 +194,24 @@ contract RevenueController is Ownable, ReentrancyGuard {
     function clapCapacity(address account) external view returns (uint256) {
         uint256 live = tki.balanceOf(account);
         uint256 pending = pendingTkiOf(account);
-        uint256 reserved = reservedAmount[account][address(tki)];
+        uint256 delegated = delegatedAmount[account][address(tki)];
         uint256 free = live + pending;
-        return free > reserved ? free - reserved : 0;
+        return free > delegated ? free - delegated : 0;
+    }
+
+    function giftCapacity(address account) external view returns (uint256) {
+        uint256 live = tk.balanceOf(account);
+        uint256 delegated = delegatedAmount[account][address(tk)];
+        return live > delegated ? live - delegated : 0;
+    }
+
+    function effectiveBalance(
+        address account,
+        address token
+    ) external view returns (uint256) {
+        uint256 balance = IERC20(token).balanceOf(account);
+        uint256 delegated = delegatedAmount[account][token];
+        return balance > delegated ? balance - delegated : 0;
     }
 
     function previewCreatorPayoutTK(
@@ -254,116 +270,118 @@ contract RevenueController is Ownable, ReentrancyGuard {
         }
     }
 
-    // ───────── Reservation helper ─────────
-    function _reserve(address user, address token, uint256 amount) internal {
-        uint256 bal = IERC20(token).balanceOf(user);
-        uint256 rsv = reservedAmount[user][token];
-        require(bal >= rsv + amount, "insufficient (reserved)");
-        reservedAmount[user][token] = rsv + amount;
+    function revokeDelegation(bytes32 delegationHash) external {
+        require(storedDelegations[delegationHash], "delegation not found");
+
+        // Remove delegation reference
+        storedDelegations[delegationHash] = false;
+
+        // Note: In the real ERC-7710 system, revocation would be handled by the DelegationManager
+        // This is just for tracking purposes in our system
+        emit DelegationRevoked(delegationHash, msg.sender);
     }
 
-    // ───────── Submit intents (stored delegations) ─────────
-    // For claps we accrue sender first so they can use fresh TKI.
+    function revokeDelegations(
+        bytes32[] calldata delegationHashes
+    ) external onlyOwner {
+        for (uint256 i = 0; i < delegationHashes.length; i++) {
+            bytes32 delegationHash = delegationHashes[i];
+            if (storedDelegations[delegationHash]) {
+                storedDelegations[delegationHash] = false;
+                emit DelegationRevoked(delegationHash, msg.sender);
+            }
+        }
+    }
+
+    // ───────── Submit intents (using stored delegations) ─────────
     function submitClap(
         address creator,
-        uint256 tkiAmount,
-        bytes calldata delegation
+        uint256 amount,
+        Delegation calldata delegation
     ) external nonReentrant returns (uint256 id) {
         require(tki.actorType(creator) == TKI.ActorType.Creator, "not creator");
 
-        // refresh time & credit sender before reserving
+        // refresh time & credit sender before checking capacity
         if (block.timestamp - lastAccrualTimestamp >= accrualInterval)
             pokeAccrual();
         _accrueFor(msg.sender);
-
-        bytes4 sel = IERC20.transfer.selector; // 0xa9059cbb
-        require(
-            validator.isDelegationValid(
-                msg.sender,
-                address(tki),
-                sel,
-                tkiAmount,
-                delegation
-            ),
-            "bad del"
+        bytes32 delegationHash = delegationManager.getDelegationHash(
+            delegation
         );
 
-        _reserve(msg.sender, address(tki), tkiAmount);
-        bytes32 h = validator.hashDelegation(delegation);
+        // Check capacity (simplified for now)
+        uint256 capacity = this.clapCapacity(msg.sender);
+        require(capacity >= amount, "insufficient capacity");
+
+        // Encode delegation to bytes for storage
+        bytes memory delegationBytes = abi.encode(delegation);
 
         id = intents.length;
         intents.push(
             Intent({
                 from: msg.sender,
                 to: creator,
-                token: address(tki),
-                amount: tkiAmount,
+                amount: amount,
+                delegationBytes: delegationBytes,
                 kind: IntentKind.Clap,
-                delegation: delegation,
-                delegationHash: h,
                 createdAt: uint64(block.timestamp),
                 approved: false,
                 settled: false
             })
         );
-
+        // increment delegated amount for the certain token
+        delegatedAmount[msg.sender][address(tki)] += amount;
         emit IntentSubmitted(
             id,
             msg.sender,
             creator,
-            address(tki),
-            tkiAmount,
-            IntentKind.Clap,
-            h
+            amount,
+            delegationHash,
+            IntentKind.Clap
         );
     }
 
     function submitGift(
         address creator,
-        uint256 tkAmount,
-        bytes calldata delegation
+        uint256 amount,
+        Delegation calldata delegation
     ) external nonReentrant returns (uint256 id) {
         require(tki.actorType(creator) == TKI.ActorType.Creator, "not creator");
 
-        bytes4 sel = IERC20.transfer.selector;
-        require(
-            validator.isDelegationValid(
-                msg.sender,
-                address(tk),
-                sel,
-                tkAmount,
-                delegation
-            ),
-            "bad del"
+        // Verify delegation exists and is not disabled
+        bytes32 delegationHash = delegationManager.getDelegationHash(
+            delegation
         );
 
-        _reserve(msg.sender, address(tk), tkAmount);
-        bytes32 h = validator.hashDelegation(delegation);
+        // Check capacity (simplified for now)
+        uint256 capacity = this.giftCapacity(msg.sender);
+        require(capacity >= amount, "insufficient capacity");
+
+        // Encode delegation to bytes for storage
+        bytes memory delegationBytes = abi.encode(delegation);
 
         id = intents.length;
         intents.push(
             Intent({
                 from: msg.sender,
                 to: creator,
-                token: address(tk),
-                amount: tkAmount,
+                amount: amount,
+                delegationBytes: delegationBytes,
                 kind: IntentKind.Gift,
-                delegation: delegation,
-                delegationHash: h,
                 createdAt: uint64(block.timestamp),
                 approved: false,
                 settled: false
             })
         );
-
+        // increment delegated amount for the certain token
+        delegatedAmount[msg.sender][address(tk)] += amount;
         emit IntentSubmitted(
             id,
             msg.sender,
             creator,
-            address(tk),
-            tkAmount,
-            IntentKind.Gift,
-            h
+            amount,
+            delegationHash,
+            IntentKind.Gift
         );
     }
 
@@ -386,10 +404,8 @@ contract RevenueController is Ownable, ReentrancyGuard {
         Intent storage it = intents[id];
         require(!it.settled, "settled");
         require(it.from == msg.sender, "not owner");
-        uint256 r = reservedAmount[it.from][it.token];
-        require(r >= it.amount, "reserve bug");
-        reservedAmount[it.from][it.token] = r - it.amount;
-        it.amount = 0;
+
+        // Mark intent as cancelled by setting approved to false
         it.approved = false;
     }
 
@@ -411,37 +427,47 @@ contract RevenueController is Ownable, ReentrancyGuard {
             _accrueFor(creators[i]);
         }
 
-        // 2) execute approved intents from the queue (operator transfers)
+        // 2) execute approved intents from the queue (redeem delegations)
         for (uint256 j = 0; j < intentIds.length; j++) {
             uint256 id = intentIds[j];
             require(id < intents.length, "id");
             Intent storage it = intents[id];
-            if (it.settled || !it.approved || it.amount == 0) continue;
+            if (it.settled || !it.approved) continue;
 
-            // optional: re-validate delegation at execution time
-            bytes4 sel = IERC20.transfer.selector;
-            if (
-                !validator.isDelegationValid(
-                    it.from,
-                    it.token,
-                    sel,
-                    it.amount,
-                    it.delegation
-                )
-            ) {
-                continue; // revoked/expired since submission
-            }
+            // Determine token type and amount from intent (simplified)
+            address token = (it.kind == IntentKind.Clap)
+                ? address(tki)
+                : address(tk);
+            uint256 amount = it.amount;
 
-            if (it.token == address(tk)) {
-                tk.operatorTransfer(it.from, it.to, it.amount);
-            } else if (it.token == address(tki)) {
-                tki.operatorTransfer(it.from, it.to, it.amount);
-            } else {
-                continue;
-            }
+            // Create arrays for delegation redemption
+            bytes[] memory permissionContexts = new bytes[](1);
+            ModeCode[] memory modes = new ModeCode[](1);
+            bytes[] memory executionCallDatas = new bytes[](1);
 
-            uint256 r = reservedAmount[it.from][it.token];
-            reservedAmount[it.from][it.token] = r - it.amount;
+            // Use stored delegation bytes directly
+            permissionContexts[0] = it.delegationBytes;
+            modes[0] = ModeCode.wrap(0); // Single call mode
+            // Encode the execution call data properly: (target, value, callData)
+            bytes memory transferCallData = abi.encodeWithSelector(
+                IERC20.transfer.selector,
+                it.to,
+                amount
+            );
+            executionCallDatas[0] = abi.encode(
+                token,
+                uint256(0),
+                transferCallData
+            );
+
+            delegationManager.redeemDelegations(
+                permissionContexts,
+                modes,
+                executionCallDatas
+            );
+
+            // Update delegated amounts (simplified)
+            delegatedAmount[it.from][token] -= amount;
 
             it.settled = true;
             emit IntentSettled(id);

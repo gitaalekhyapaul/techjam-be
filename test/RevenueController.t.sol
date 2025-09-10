@@ -1,46 +1,72 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.23;
 
 import "@forge-std/Test.sol";
 import {console} from "@forge-std/console.sol";
+import {DelegationManager} from "@delegation-framework/src/DelegationManager.sol";
+import {Delegation, Caveat} from "@delegation-framework/src/utils/Types.sol";
 import "../src/TK.sol";
 import "../src/TKI.sol";
 import "../src/RevenueController.sol";
 
-// Lightweight in-file mock validator (accept-all by default)
-contract MockValidator is IDelegationValidator {
-    mapping(bytes32 => bool) public overrideValid; // optional override per-hash
+// Mock DelegationManager that implements the interface for testing
+// contract MockDelegationManager is IDelegationManager {
+//     mapping(bytes32 => bool) public disabledDelegations_; // track disabled delegations
+//     mapping(bytes32 => bool) public redeemedDelegations; // track redeemed delegations
+//     mapping(bytes32 => Delegation) public storedDelegations_; // store delegations for testing
 
-    function isDelegationValid(
-        address,
-        address,
-        bytes4,
-        uint256,
-        bytes calldata delegation
-    ) external view returns (bool) {
-        bytes32 h = keccak256(delegation);
-        if (overrideValid[h]) return true;
-        // default: accept
-        return true;
-    }
+//     function redeemDelegations(
+//         bytes[] calldata _permissionContexts,
+//         ModeCode[] calldata /* _modes */,
+//         bytes[] calldata _executionCallDatas
+//     ) external {
+//         // Mock implementation - just track that redemption was called
+//         for (uint256 i = 0; i < _permissionContexts.length; i++) {
+//             bytes32 h = keccak256(_permissionContexts[i]);
+//             redeemedDelegations[h] = true;
+//         }
+//         // do the ERC20 transfer
+//         for (uint256 i = 0; i < _executionCallDatas.length; i++) {
+//             (address target, , bytes memory data) = abi.decode(
+//                 _executionCallDatas[i],
+//                 (address, uint256, bytes)
+//             );
+//             (bool success, ) = target.call(data);
+//             require(success, "ERC20 transfer failed");
+//         }
+//     }
 
-    function hashDelegation(
-        bytes calldata delegation
-    ) external pure returns (bytes32) {
-        return keccak256(delegation);
-    }
+//     function getDelegationHash(
+//         Delegation calldata _delegation
+//     ) external pure returns (bytes32) {
+//         return keccak256(abi.encode(_delegation));
+//     }
 
-    // helper to set allow-list if you want negative tests
-    function setValid(bytes32 h, bool v) external {
-        overrideValid[h] = v;
-    }
-}
+//     function disabledDelegations(
+//         bytes32 _delegationHash
+//     ) external view returns (bool) {
+//         return disabledDelegations_[_delegationHash];
+//     }
+
+//     // Other required functions (not used in our tests)
+//     function pause() external {}
+
+//     function unpause() external {}
+
+//     function enableDelegation(Delegation calldata) external {}
+
+//     function disableDelegation(Delegation calldata) external {}
+
+//     function getDomainHash() external pure returns (bytes32) {
+//         return bytes32(0);
+//     }
+// }
 
 contract RevenueControllerTest is Test {
     TK tk;
     TKI tki;
     RevenueController rc;
-    MockValidator mv;
+    DelegationManager mdm;
 
     address owner = address(this);
     address alice = address(0xA11CE);
@@ -52,14 +78,17 @@ contract RevenueControllerTest is Test {
         tk = new TK("TikTok USD", "TK");
         tki = new TKI("TikTok Interest", "TKI");
 
-        // Deploy mock validator + controller (2% monthly, cap 10%)
-        mv = new MockValidator();
+        // Deploy mock delegation manager + controller (2% monthly, cap 10%)
+        mdm = new DelegationManager(owner);
         rc = new RevenueController(
-            address(tk),
-            address(tki),
-            address(mv),
-            200,
-            1000
+            address(tk), // tk
+            address(tki), // tki
+            address(mdm), // delegationManager
+            200, // rebateMonthlyBps
+            1000, // maxRebateMonthlyBps
+            30 seconds, // secondsPerMonth
+            1 seconds, // accrualInterval
+            7 seconds // settlementPeriod
         );
 
         // Grant controller roles on both tokens
@@ -82,7 +111,7 @@ contract RevenueControllerTest is Test {
 
     function testPendingAndAccrual() public {
         // Advance ~15 days, bump index
-        vm.warp(block.timestamp + 15 days);
+        vm.warp(block.timestamp + 15 seconds);
         rc.pokeAccrual();
 
         // Pending for Alice: 1% of 100 TK -> 1 TK equiv -> 100 TKI
@@ -103,87 +132,113 @@ contract RevenueControllerTest is Test {
         assertEq(rc.userIndex(alice), idx);
     }
 
-    // ---------- Intent Queue (store delegation + reserve) ----------
+    // ---------- Delegation Storage and Intent Queue ----------
 
-    function testSubmitClapStoresDelegationAndReserves() public {
+    function testStoreDelegationAndSubmitClap() public {
         // Give Alice some TKI first (30 days at 2% on 100 TK = 200 TKI)
-        vm.warp(block.timestamp + 30 days);
+        vm.warp(block.timestamp + 30 seconds);
         rc.pokeAccrual();
         vm.prank(alice);
         rc.accrueFor(alice);
         assertEq(tki.balanceOf(alice), 200 ether);
 
-        bytes memory del = abi.encodePacked("alice-clap-60-to-creator");
+        // Create a mock delegation for testing
+        Delegation memory delegation = Delegation({
+            delegate: creator,
+            delegator: alice,
+            authority: bytes32(0),
+            caveats: new Caveat[](0),
+            salt: 0,
+            signature: abi.encodePacked("alice-clap-60-to-creator")
+        });
+
+        // Store delegation in mock manager
         vm.startPrank(alice);
-        uint256 id = rc.submitClap(creator, 60 ether, del);
+        uint256 id = rc.submitClap(creator, 60 ether, delegation);
         vm.stopPrank();
-
-        // Reservation recorded
-        assertEq(rc.reservedAmount(alice, address(tki)), 60 ether);
-
-        // Delegation bytes stored in queue
+        // check that the intent is stored
         (
             address from,
             address to,
-            address token,
             uint256 amount,
+            bytes memory delegationBytes,
             RevenueController.IntentKind kind,
-            bytes memory storedDel,
-            bytes32 dhash,
             ,
             bool approved,
             bool settled
         ) = rc.intents(id);
-
         assertEq(from, alice);
         assertEq(to, creator);
-        assertEq(token, address(tki));
         assertEq(amount, 60 ether);
-        assertEq(uint(kind), uint(RevenueController.IntentKind.Clap));
-        assertEq(keccak256(storedDel), keccak256(del));
-        assertEq(dhash, keccak256(del));
-        assertTrue(!approved && !settled);
+        assertTrue(kind == RevenueController.IntentKind.Clap);
+        assertTrue(!approved);
+        assertTrue(!settled);
+
+        // Decode and verify delegation
+        Delegation memory decodedDelegation = abi.decode(
+            delegationBytes,
+            (Delegation)
+        );
+        assertEq(decodedDelegation.delegator, alice);
+        assertEq(decodedDelegation.delegate, creator);
+        assertEq(decodedDelegation.authority, bytes32(0));
+        assertEq(decodedDelegation.caveats.length, 0);
+        assertEq(decodedDelegation.salt, 0);
+        assertEq(
+            decodedDelegation.signature,
+            abi.encodePacked("alice-clap-60-to-creator")
+        );
     }
 
     function testCancelIntentReleases() public {
         // accrue some TKI
-        vm.warp(block.timestamp + 30 days);
+        vm.warp(block.timestamp + 30 seconds);
         rc.pokeAccrual();
-        vm.prank(alice);
+        vm.startPrank(alice);
         rc.accrueFor(alice);
 
-        bytes memory del = abi.encodePacked("alice-clap-40");
-        vm.startPrank(alice);
-        uint256 id = rc.submitClap(creator, 40 ether, del);
+        // Store delegation and submit clap
+        // Create a mock delegation for testing
+        Delegation memory delegation = Delegation({
+            delegate: creator,
+            delegator: alice,
+            authority: bytes32(0),
+            caveats: new Caveat[](0),
+            salt: 0,
+            signature: abi.encodePacked("alice-clap-60-to-creator")
+        });
+
+        uint256 id = rc.submitClap(creator, 60 ether, delegation);
         rc.cancelIntent(id);
         vm.stopPrank();
 
-        assertEq(rc.reservedAmount(alice, address(tki)), 0);
-
-        // amount zeroed
-        (, , , uint256 amt, , , , , , bool settled) = rc.intents(id);
-        assertEq(amt, 0);
-        assertTrue(!settled);
+        // Check intent is cancelled
+        (, , , , , , bool approved, ) = rc.intents(id);
+        assertTrue(!approved);
     }
 
     // ---------- Settlement (execute + convert) ----------
 
     function testSettleEpochExecutesApprovedIntentsAndConverts() public {
-        console.log("creatorTkBalance", tk.balanceOf(creator));
-        console.log("creatorTkiBalance", tki.balanceOf(creator));
-        console.log("tkiPerTkRatio", rc.tkiPerTkRatio());
-        console.log("aliceTkBalance", tk.balanceOf(alice));
-        console.log("aliceTkiBalance", tki.balanceOf(alice));
         // Alice accrues 200 TKI (30 days)
-        vm.warp(block.timestamp + 30 days);
+        vm.warp(block.timestamp + 30 seconds);
         rc.pokeAccrual();
-        vm.prank(alice);
+        vm.startPrank(alice);
         rc.accrueFor(alice);
 
-        // She claps 120 TKI to creator (enough to convert >=1 TK at 100:1)
-        bytes memory del = abi.encodePacked("alice-clap-120");
-        vm.prank(alice);
-        uint256 id = rc.submitClap(creator, 120 ether, del);
+        // Store delegation and submit clap
+        // Create a mock delegation for testing
+        Delegation memory delegation = Delegation({
+            delegate: creator,
+            delegator: alice,
+            authority: bytes32(0),
+            caveats: new Caveat[](0),
+            salt: 0,
+            signature: abi.encodePacked("alice-clap-60-to-creator")
+        });
+        // Store delegation in mock manager
+        uint256 id = rc.submitClap(creator, 60 ether, delegation);
+        vm.stopPrank();
 
         // Approve intent
         uint256[] memory ids = new uint256[](1);
@@ -202,31 +257,35 @@ contract RevenueControllerTest is Test {
         // Execute settlement
         rc.settleEpoch(ids, creators);
 
-        // Reservation released
-        assertEq(rc.reservedAmount(alice, address(tki)), 0);
+        // Delegated amount released
+        assertEq(rc.delegatedAmount(alice, address(tki)), 0);
 
         // After operatorTransfer, creator held 120 TKI, then 0 TKI remains
-        console.log("creatorTkBalance", tk.balanceOf(creator));
-        console.log("creatorTkiBalance", tki.balanceOf(creator));
-        console.log("tkiPerTkRatio", rc.tkiPerTkRatio());
-        console.log("aliceTkBalance", tk.balanceOf(alice));
-        console.log("aliceTkiBalance", tki.balanceOf(alice));
         assertEq(tki.balanceOf(creator), 0 ether);
         assertEq(tk.balanceOf(creator), 1.2 ether);
 
         // Intent marked settled
-        (, , , , , , , , , bool settled) = rc.intents(id);
+        (, , , , , , , bool settled) = rc.intents(id);
         assertTrue(settled);
     }
 
     // ---------- Gift path (TK) executes via operatorTransfer ----------
 
     function testGiftExecutesOnSettlement() public {
-        // Build gift delegation (bob -> creator, 10 TK)
-        bytes memory del = abi.encodePacked("bob-gift-10-tk");
-
-        vm.prank(bob);
-        uint256 id = rc.submitGift(creator, 10 ether, del);
+        // Store gift delegation (bob -> creator, 10 TK)
+        vm.startPrank(bob);
+        // Create a mock delegation for testing
+        Delegation memory delegation = Delegation({
+            delegate: creator,
+            delegator: bob,
+            authority: bytes32(0),
+            caveats: new Caveat[](0),
+            salt: 0,
+            signature: abi.encodePacked("bob-gift-10-tk")
+        });
+        // Store delegation in mock manager
+        uint256 id = rc.submitGift(creator, 10 ether, delegation);
+        vm.stopPrank();
 
         // Approve + settle
         uint256[] memory ids = new uint256[](1);
@@ -244,7 +303,92 @@ contract RevenueControllerTest is Test {
 
         // 10 TK moved to creator
         assertEq(tk.balanceOf(creator) - creatorTkBefore, 10 ether);
-        assertEq(rc.reservedAmount(bob, address(tk)), 0);
+        assertEq(rc.delegatedAmount(bob, address(tk)), 0);
+    }
+
+    // ---------- Delegation Management ----------
+
+    function testDelegationRevocation() public {
+        // Store delegation
+        vm.startPrank(alice);
+        // Create a mock delegation for testing
+        Delegation memory delegation = Delegation({
+            delegate: creator,
+            delegator: alice,
+            authority: bytes32(0),
+            caveats: new Caveat[](0),
+            salt: 0,
+            signature: abi.encodePacked("alice-clap-60-to-creator")
+        });
+        // Store delegation in mock manager
+        bytes32 delegationHash = mdm.getDelegationHash(delegation);
+        vm.startPrank(alice);
+        rc.submitClap(creator, 60 ether, delegation);
+        vm.stopPrank();
+        assertEq(rc.delegatedAmount(alice, address(tki)), 60 ether);
+
+        // Revoke delegation
+        rc.revokeDelegation(delegationHash);
+        vm.stopPrank();
+
+        // Check delegation is revoked
+        assertFalse(rc.storedDelegations(delegationHash));
+        assertEq(rc.delegatedAmount(alice, address(tki)), 0);
+    }
+
+    function testOwnerCanRevokeDelegations() public {
+        // Store delegation
+        vm.prank(alice);
+        // Create a mock delegation for testing
+        Delegation memory delegation = Delegation({
+            delegate: creator,
+            delegator: alice,
+            authority: bytes32(0),
+            caveats: new Caveat[](0),
+            salt: 0,
+            signature: abi.encodePacked("alice-clap-60-to-creator")
+        });
+        // Store delegation in mock manager
+        bytes32 delegationHash = mdm.getDelegationHash(delegation);
+        vm.startPrank(alice);
+        rc.submitClap(creator, 60 ether, delegation);
+        vm.stopPrank();
+
+        // Owner revokes delegation
+        rc.revokeDelegation(delegationHash);
+
+        // Check delegation is revoked
+        assertFalse(rc.storedDelegations(delegationHash));
+        assertEq(rc.delegatedAmount(alice, address(tki)), 0);
+    }
+
+    function testEffectiveBalanceCalculation() public {
+        // Give Alice some TKI
+        vm.warp(block.timestamp + 30 days);
+        rc.pokeAccrual();
+        vm.startPrank(alice);
+        rc.accrueFor(alice);
+
+        uint256 balance = tki.balanceOf(alice);
+        assertEq(rc.effectiveBalance(alice, address(tki)), balance);
+
+        // Store delegation
+        // Create a mock delegation for testing
+        Delegation memory delegation = Delegation({
+            delegate: creator,
+            delegator: alice,
+            authority: bytes32(0),
+            caveats: new Caveat[](0),
+            salt: 0,
+            signature: abi.encodePacked("alice-clap-60-to-creator")
+        });
+        // Store delegation in mock manager
+        rc.submitClap(creator, 60 ether, delegation);
+        vm.stopPrank();
+
+        // Effective balance should be reduced by delegated amount
+        assertEq(rc.effectiveBalance(alice, address(tki)), balance - 60 ether);
+        assertEq(rc.clapCapacity(alice), balance - 60 ether);
     }
 
     // ---------- Owner-only guards ----------

@@ -1,28 +1,12 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.23;
 
 import "@forge-std/Script.sol";
+import {DelegationManager} from "@delegation-framework/src/DelegationManager.sol";
 import "../src/RevenueController.sol";
 import "../src/TK.sol";
 import "../src/TKI.sol";
 import {console} from "@forge-std/console.sol";
-
-// Dummy validator that accepts everything (optional for devnets)
-contract DummyValidator is IDelegationValidator {
-    function isDelegationValid(
-        address,
-        address,
-        bytes4,
-        uint256,
-        bytes calldata
-    ) external pure returns (bool) {
-        return true;
-    }
-
-    function hashDelegation(bytes calldata d) external pure returns (bytes32) {
-        return keccak256(d);
-    }
-}
 
 contract DeployAll is Script {
     function run() external {
@@ -34,16 +18,19 @@ contract DeployAll is Script {
         TK tk = new TK("TikTok USD", "TK");
         TKI tki = new TKI("TikTok Interest", "TKI");
 
-        // Deploy validator (swap with real toolkit validator in prod)
-        DummyValidator validator = new DummyValidator();
+        // Deploy delegation manager
+        DelegationManager dm = new DelegationManager(msg.sender);
 
         // rebate 2% (200 bps), max 10% (1000 bps)
         RevenueController rc = new RevenueController(
-            address(tk),
-            address(tki),
-            address(validator),
-            200,
-            1000
+            address(tk), // tk
+            address(tki), // tki
+            address(dm), // delegationManager
+            200, // rebateMonthlyBps
+            1000, // maxRebateMonthlyBps
+            30 seconds, // secondsPerMonth
+            1 seconds, // accrualInterval
+            7 seconds // settlementPeriod
         );
 
         // Grant roles to controller
@@ -68,6 +55,6 @@ contract DeployAll is Script {
         console.log("TK:  ", address(tk));
         console.log("TKI: ", address(tki));
         console.log("RC:  ", address(rc));
-        console.log("Validator: ", address(validator));
+        console.log("DelegationManager: ", address(dm));
     }
 }

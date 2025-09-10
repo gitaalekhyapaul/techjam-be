@@ -82,22 +82,62 @@ enum ActorType {
 }
 ```
 
-### **4. Delegation Validator (ERC-7710)**
+### **4. Delegation System (ERC-7710)**
 
-The system integrates with **ERC-7710 delegation standards** to enable secure, permissionless transfers without requiring users to sign individual transactions.
+The system implements a comprehensive **ERC-7710 delegation framework** that enables users to create, store, and manage delegations for secure, permissionless transfers without requiring individual transaction signatures.
 
-#### **Key Functions:**
+#### **Delegation Structure:**
 
 ```solidity
-function isDelegationValid(
-    address delegator,
-    address token,
-    bytes4 selector,    // ERC20.transfer selector
-    uint256 amount,
-    bytes calldata delegation
-) external view returns (bool);
+struct Delegation {
+    address delegator;      // User creating the delegation
+    address delegatee;      // Creator receiving the delegation
+    address token;          // TK or TKI token address
+    bytes4 selector;        // ERC20.transfer selector
+    uint256 amount;         // Amount to be delegated
+    uint256 nonce;          // Delegation nonce for uniqueness
+    uint256 deadline;       // Expiration timestamp
+    bytes signature;        // ERC-7710 signature
+    bool revoked;           // Revocation status
+    uint64 createdAt;       // Creation timestamp
+}
+```
 
-function hashDelegation(bytes calldata delegation) external view returns (bytes32);
+#### **Delegation Management Functions:**
+
+```solidity
+// Store a new delegation
+function storeDelegation(
+    address delegatee,
+    address token,
+    uint256 amount,
+    uint256 deadline,
+    bytes calldata signature
+) external returns (bytes32 delegationHash);
+
+// Revoke a delegation (user or admin)
+function revokeDelegation(bytes32 delegationHash) external;
+
+// Batch revoke delegations (admin only)
+function revokeDelegations(bytes32[] calldata delegationHashes) external onlyOwner;
+```
+
+#### **Delegation Validator Interface:**
+
+```solidity
+interface IDelegationValidator {
+    function isDelegationValid(
+        address delegator,
+        address token,
+        bytes4 selector,
+        uint256 amount,
+        bytes calldata delegation
+    ) external view returns (bool);
+
+    function hashDelegation(bytes calldata delegation) external view returns (bytes32);
+
+    function redeemDelegation(bytes calldata delegation) external returns (bool);
+}
 ```
 
 ## 🔄 System Flow
@@ -123,7 +163,7 @@ sequenceDiagram
     RC->>TKI: mint(User, pending TKI)
 ```
 
-### **Phase 2: Intent Submission & Validation**
+### **Phase 2: Delegation Creation & Intent Submission**
 
 ```mermaid
 sequenceDiagram
@@ -132,11 +172,16 @@ sequenceDiagram
     participant DV as Delegation Validator
     participant TKI as TKI Token
 
-    User->>RC: submitClap(Creator, 50 TKI, delegation)
-    RC->>DV: isDelegationValid(User, TKI, transfer, 50, delegation)?
+    User->>RC: storeDelegation(Creator, TKI, 50, deadline, signature)
+    RC->>DV: isDelegationValid(User, TKI, transfer, 50, signature)?
     DV-->>RC: true
-    RC->>RC: reserve(User, 50 TKI)
-    RC->>RC: store Intent{id=0, approved=false, settled=false}
+    RC->>RC: store Delegation{hash=0x123..., amount=50, revoked=false}
+    RC->>RC: delegatedAmount[User][TKI] += 50
+
+    User->>RC: submitClap(Creator, delegationHash)
+    RC->>RC: validate delegation exists & not revoked
+    RC->>RC: check clapCapacity(User) >= 50
+    RC->>RC: store Intent{id=0, delegationHash=0x123..., approved=false}
 ```
 
 ### **Phase 3: Approval & Settlement**
@@ -145,6 +190,7 @@ sequenceDiagram
 sequenceDiagram
     participant Admin
     participant RC as RevenueController
+    participant DV as Delegation Validator
     participant TKI as TKI Token
     participant TK as TK Token
 
@@ -153,7 +199,10 @@ sequenceDiagram
     RC->>RC: settleEpoch([0], [Creator])
 
     RC->>RC: accrueFor(Creator) [final TKI credit]
+    RC->>DV: redeemDelegation(delegation.signature)
+    DV-->>RC: true [delegation redeemed on-chain]
     RC->>TKI: operatorTransfer(User → Creator, 50 TKI)
+    RC->>RC: delegatedAmount[User][TKI] -= 50
     RC->>TKI: controllerBurn(Creator, N TKI)
     RC->>TK: mint(Creator, N/100 TK)
 ```
@@ -193,48 +242,126 @@ function pendingTkiOf(address account) public view returns (uint256) {
 }
 ```
 
+## 🎯 Delegation Workflow
+
+### **Step-by-Step User Journey**
+
+1. **Create Delegation**
+
+   ```solidity
+   // User creates delegation with ERC-7710 signature
+   bytes32 delegationHash = rc.storeDelegation(
+       creator,           // Target creator
+       address(tki),      // Token to delegate
+       100 ether,         // Amount to delegate
+       deadline,          // Expiration time
+       signature          // ERC-7710 signature
+   );
+   ```
+
+2. **Submit Intent**
+
+   ```solidity
+   // User submits clap intent using stored delegation
+   uint256 intentId = rc.submitClap(creator, delegationHash);
+   ```
+
+3. **AML Approval**
+
+   ```solidity
+   // Admin approves intent after off-chain checks
+   rc.approveIntents([intentId], [true]);
+   ```
+
+4. **Settlement Execution**
+   ```solidity
+   // System redeems delegation and transfers tokens
+   rc.settleEpoch([intentId], [creator]);
+   ```
+
+### **Delegation Benefits**
+
+- **Gas Efficiency** - Create delegation once, use multiple times
+- **Security** - Delegations can be revoked if compromised
+- **Transparency** - All delegations are stored on-chain
+- **Flexibility** - Support for both TK and TKI tokens
+- **Compliance** - Built-in AML and fraud detection support
+
 ## 🎭 Intent System
 
 ### **Intent Structure**
 
-The system uses an **intent-based architecture** where user actions are queued and processed in batches:
+The system uses an **intent-based architecture** where user actions are queued and processed in batches. Intents now reference stored delegations instead of storing raw delegation data:
 
 ```solidity
 struct Intent {
     address from;           // Fan submitting the intent
     address to;             // Creator receiving support
-    address token;          // TK or TKI token address
-    uint256 amount;         // Amount to transfer
+    bytes32 delegationHash; // Reference to stored delegation
     IntentKind kind;        // Clap (TKI) or Gift (TK)
-    bytes delegation;       // Raw ERC-7710 delegation payload
-    bytes32 delegationHash; // Hashed delegation for verification
     uint64 createdAt;       // Timestamp of intent creation
     bool approved;          // AML/fraud approval flag
     bool settled;           // Execution status
 }
 ```
 
+### **Delegation Storage**
+
+Delegations are stored separately and referenced by intents:
+
+```solidity
+mapping(bytes32 => Delegation) public delegations; // delegationHash => Delegation
+mapping(address => uint256) public delegationNonces; // user => nonce counter
+mapping(address => mapping(address => uint256)) public delegatedAmount; // user => token => delegated amount
+```
+
 ### **Intent Lifecycle**
 
-1. **Submission** - User submits intent with delegation
-2. **Validation** - Delegation is verified by validator
-3. **Reservation** - Tokens are reserved (not yet moved)
+1. **Delegation Creation** - User creates and stores delegation with ERC-7710 signature
+2. **Intent Submission** - User submits intent referencing stored delegation
+3. **Validation** - System validates delegation exists, not revoked, and user has capacity
 4. **Approval** - Intent is approved by AML/fraud detection
-5. **Settlement** - Intent is executed during settlement epoch
-6. **Completion** - Tokens are transferred and intent marked settled
+5. **Settlement** - Delegation is redeemed on-chain and tokens transferred
+6. **Completion** - Delegated amounts are released and intent marked settled
 
 ## 🔒 Security Features
 
-### **Reservation System**
+### **Delegation Tracking System**
 
-The reservation mechanism prevents users from double-spending their tokens:
+The delegation tracking mechanism prevents users from over-delegating their tokens:
 
 ```solidity
-function _reserve(address user, address token, uint256 amount) internal {
-    uint256 bal = IERC20(token).balanceOf(user);
-    uint256 rsv = reservedAmount[user][token];
-    require(bal >= rsv + amount, "insufficient (reserved)");
-    reservedAmount[user][token] = rsv + amount;
+function effectiveBalance(address account, address token) external view returns (uint256) {
+    uint256 balance = IERC20(token).balanceOf(account);
+    uint256 delegated = delegatedAmount[account][token];
+    return balance > delegated ? balance - delegated : 0;
+}
+
+function clapCapacity(address account) external view returns (uint256) {
+    uint256 live = tki.balanceOf(account);
+    uint256 pending = pendingTkiOf(account);
+    uint256 delegated = delegatedAmount[account][address(tki)];
+    uint256 free = live + pending;
+    return free > delegated ? free - delegated : 0;
+}
+```
+
+### **Delegation Revocation**
+
+Users and administrators can revoke delegations for security:
+
+```solidity
+function revokeDelegation(bytes32 delegationHash) external {
+    Delegation storage delegation = delegations[delegationHash];
+    require(delegation.delegator != address(0), "delegation not found");
+    require(!delegation.revoked, "already revoked");
+    require(
+        msg.sender == delegation.delegator || msg.sender == owner(),
+        "not authorized"
+    );
+
+    delegation.revoked = true;
+    delegatedAmount[delegation.delegator][delegation.token] -= delegation.amount;
 }
 ```
 
@@ -279,9 +406,30 @@ function settleEpoch(uint256[] calldata intentIds, address[] calldata creators)
         pokeAccrual();
     }
 
-    // 2. Execute approved intents
+    // 2. Execute approved intents (redeem delegations)
     for (uint256 j = 0; j < intentIds.length; j++) {
-        // Process each intent...
+        uint256 id = intentIds[j];
+        Intent storage it = intents[id];
+        if (it.settled || !it.approved || it.delegationHash == bytes32(0)) continue;
+
+        // Get delegation
+        Delegation storage delegation = delegations[it.delegationHash];
+        if (delegation.delegator == address(0) || delegation.revoked) continue;
+
+        // Redeem delegation on-chain
+        bool redeemed = validator.redeemDelegation(delegation.signature);
+        if (!redeemed) continue;
+
+        // Execute transfer based on token type
+        if (delegation.token == address(tk)) {
+            tk.operatorTransfer(it.from, it.to, delegation.amount);
+        } else if (delegation.token == address(tki)) {
+            tki.operatorTransfer(it.from, it.to, delegation.amount);
+        }
+
+        // Update delegated amounts
+        delegatedAmount[it.from][delegation.token] -= delegation.amount;
+        it.settled = true;
     }
 
     // 3. Convert creators' TKI -> TK
@@ -391,10 +539,31 @@ function _setRebateMonthlyBps(uint256 v) internal {
 All important state changes emit events for off-chain monitoring:
 
 ```solidity
+// Interest accrual events
 event Accrued(uint256 deltaIndex, uint256 newGlobalIndex, uint256 at);
-event IntentSubmitted(uint256 indexed id, address indexed from, address indexed to, ...);
+
+// Delegation management events
+event DelegationStored(
+    bytes32 indexed delegationHash,
+    address indexed delegator,
+    address indexed delegatee,
+    address token,
+    uint256 amount
+);
+event DelegationRevoked(bytes32 indexed delegationHash, address indexed revoker);
+
+// Intent lifecycle events
+event IntentSubmitted(
+    uint256 indexed id,
+    address indexed from,
+    address indexed to,
+    bytes32 delegationHash,
+    IntentKind kind
+);
 event IntentApproval(uint256 indexed id, bool approved);
 event IntentSettled(uint256 indexed id);
+
+// Creator settlement events
 event CreatorSettled(address indexed creator, uint256 tkiBurned, uint256 tkMinted);
 ```
 
@@ -419,11 +588,13 @@ forge script script/DeployAll.s.sol --tc DeployAll --rpc-url <rpc> --broadcast
 
 Comprehensive test suites cover:
 
-- Interest accrual calculations
-- Intent submission and validation
-- Settlement processing
-- Edge cases and error conditions
-- Gas optimization scenarios
+- **Delegation Management** - Creation, storage, and revocation of delegations
+- **Interest Accrual** - Calculations and compound-like behavior
+- **Intent Submission** - Validation and capacity checking
+- **Settlement Processing** - Delegation redemption and token transfers
+- **Balance Tracking** - Effective balance and capacity calculations
+- **Edge Cases** - Error conditions and security scenarios
+- **Gas Optimization** - Efficient batch processing and lazy evaluation
 
 ## 🌟 Key Innovations
 
@@ -438,11 +609,13 @@ Comprehensive test suites cover:
 - Enables complex approval workflows
 - Reduces on-chain transaction costs
 
-### **3. ERC-7710 Integration**
+### **3. ERC-7710 Delegation System**
 
-- Permissionless delegation system
-- Enhanced user experience
-- Secure transfer validation
+- **Stored Delegations** - Delegations are stored on-chain with full metadata
+- **Revocation Support** - Users and admins can revoke delegations for security
+- **On-chain Redemption** - Delegations are properly redeemed during settlement
+- **Capacity Tracking** - Real-time tracking of delegated vs available balances
+- **Enhanced UX** - Users can create delegations once and use them multiple times
 
 ### **4. Compound-like Accrual**
 
@@ -452,19 +625,22 @@ Comprehensive test suites cover:
 
 ### **5. Automated Settlement**
 
-- Periodic batch processing
-- TKI to TK conversion
-- Creator payout automation
+- **Delegation Redemption** - Properly redeems ERC-7710 delegations on-chain
+- **Batch Processing** - Periodic processing of approved intents
+- **TKI to TK Conversion** - Automatic conversion of creators' TKI to spendable TK
+- **Balance Updates** - Real-time updates of delegated amounts
+- **Creator Payout Automation** - Streamlined creator compensation
 
 ## 🔮 Future Enhancements
 
 ### **Potential Upgrades**
 
-- **Multi-chain Support** - Cross-chain intent submission
-- **Advanced Delegation** - Time-locked and conditional delegations
+- **Multi-chain Support** - Cross-chain intent submission and delegation management
+- **Advanced Delegation Types** - Time-locked, conditional, and recurring delegations
 - **Dynamic Interest Rates** - Market-based rate adjustments
 - **Creator Tiers** - Different conversion ratios based on performance
 - **Liquidity Pools** - Automated market making for TKI/TK pairs
+- **Delegation Analytics** - Advanced tracking and reporting of delegation patterns
 
 ### **Integration Opportunities**
 
@@ -482,4 +658,4 @@ Comprehensive test suites cover:
 
 ---
 
-_This architecture represents a novel approach to creator economy monetization, combining the stability of stablecoins with the engagement of social tokens through a secure, efficient, and user-friendly system._
+_This architecture represents a novel approach to creator economy monetization, combining the stability of stablecoins with the engagement of social tokens through a secure, efficient, and user-friendly system. The integration of ERC-7710 delegations provides a seamless user experience while maintaining the highest standards of security and compliance._

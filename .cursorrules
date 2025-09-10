@@ -1,0 +1,513 @@
+# TikTok TechJam 2025 - Cursor Rules
+
+## Project Context
+
+You are working on the **TikTok TechJam 2025** project, a revolutionary creator economy platform that combines interest-bearing stablecoins, social engagement tokens, and delegated transfers. The project consists of:
+
+### Smart Contracts (Ethereum)
+
+- **RevenueController**: Core orchestrator managing interest accrual, intent queuing, and settlement
+- **TK Token**: Stable USD token (ERC20) for deposits, withdrawals, and gifts
+- **TKI Token**: Interest-bearing engagement token that accrues value over time
+- **Delegation Validator**: ERC-7710 delegation validation for permissionless transfers
+
+### Backend Server (TypeScript/Express.js)
+
+- **API Server**: HTTP endpoints for contract interactions and user management
+- **Job Server**: Background task processing with BullMQ and Redis
+- **Database**: MongoDB for user data and intent tracking
+- **Caching**: Redis for performance optimization
+
+### Frontend (To be developed)
+
+- **Web Application**: React/Next.js application for user interactions
+- **Mobile App**: React Native or similar for mobile users
+- **Wallet Integration**: MetaMask and other wallet connections
+- **UI/UX**: Creator-focused design with social engagement features
+
+## Core Concepts
+
+### Dual-Token Model
+
+- **TK (TikTok USD)**: Stable value storage, 1:1 USD pegged
+- **TKI (TikTok Interest)**: Interest-bearing token, accrues over time at configurable rates
+
+### User Actions
+
+- **Clap**: Spend accumulated TKI to support creators (interest earned)
+- **Gift**: Spend TK directly to support creators (stablecoin)
+- **Deposit**: Convert fiat to TK (with optional TKI bonus)
+- **Withdraw**: Convert TK back to fiat
+
+### Interest Accrual
+
+- **Compound-like System**: Global index that increases over time
+- **Configurable Rates**: Monthly interest rates (default: 2%, max: 10%)
+- **Daily Updates**: Interest accrues daily with lazy evaluation
+- **Conversion Ratio**: 100 TKI = 1 TK (floored)
+
+### Intent System
+
+- **Submission**: Users submit clap/gift intents with ERC-7710 delegations
+- **Validation**: Delegations verified by validator contract
+- **Reservation**: Tokens reserved but not moved until settlement
+- **Approval**: AML/fraud detection approval process
+- **Settlement**: Weekly batch processing of all approved intents
+
+## Technical Architecture
+
+### Smart Contract Integration
+
+- **Viem**: TypeScript Ethereum client for contract interactions
+- **Contract ABIs**: Simplified ABIs for core functions
+- **Transaction Handling**: Gas estimation, confirmation, and error handling
+- **Event Listening**: Real-time updates from blockchain events
+
+### Backend API Endpoints
+
+- **Authentication**: `/api/auth/signup`, `/api/auth/login`, `/api/auth/profile`
+- **Contracts**: `/api/contracts/clap`, `/api/contracts/gift`, `/api/contracts/mint-tk`
+- **Queries**: `/api/contracts/balances`, `/api/contracts/intents`
+- **System**: `/health` for health checks
+
+### Data Models
+
+- **User**: email, password, walletAddress, actorType (user/creator)
+- **Intent**: intentId, from, to, token, amount, kind, delegation, status
+- **Payment**: userId, amount, status, txHash
+- **Withdrawal**: creatorId, amount, status, txHash
+
+## Frontend Requirements
+
+### User Experience
+
+- **Creator Dashboard**: View earnings, pending intents, and conversion rates
+- **Fan Interface**: Submit claps/gifts, track interest accrual, view history
+- **Wallet Connection**: Seamless MetaMask and other wallet integration
+- **Real-time Updates**: Live balance updates and transaction confirmations
+
+### Key Features
+
+- **Interest Calculator**: Show pending TKI and conversion previews
+- **Intent Management**: Submit, track, and cancel pending intents
+- **Creator Discovery**: Browse and support content creators
+- **Transaction History**: Complete audit trail of all actions
+- **Mobile Responsiveness**: Optimized for all device sizes
+
+### Technical Requirements
+
+- **React/Next.js**: Modern frontend framework with SSR capabilities
+- **TypeScript**: Full type safety for contract interactions
+- **State Management**: Redux/Zustand for global state
+- **Styling**: Tailwind CSS or styled-components for consistent design
+- **Testing**: Jest/React Testing Library for component testing
+
+## Development Guidelines
+
+### Code Quality
+
+- **TypeScript**: Strict mode enabled, proper type definitions
+- **ESLint**: Consistent code style and best practices
+- **Prettier**: Automated code formatting
+- **Testing**: Minimum 80% test coverage for components
+
+### Security
+
+- **Input Validation**: Client-side validation for all user inputs
+- **Wallet Security**: Secure handling of private keys and signatures
+- **API Security**: Proper authentication and authorization
+- **XSS Protection**: Sanitize all user-generated content
+
+### Performance
+
+- **Lazy Loading**: Code splitting and dynamic imports
+- **Caching**: Redis caching for frequently accessed data
+- **Optimization**: Bundle size optimization and tree shaking
+- **CDN**: Static asset delivery optimization
+
+## Documentation Standards
+
+### README Structure
+
+- **Project Overview**: Clear description of purpose and features
+- **Installation**: Step-by-step setup instructions
+- **Usage**: Examples and API documentation
+- **Architecture**: System design and component breakdown
+- **Development**: Local development and testing setup
+- **Deployment**: Production deployment instructions
+
+### Code Documentation
+
+- **Component Props**: Detailed prop type definitions
+- **Function Documentation**: JSDoc comments for complex functions
+- **API Documentation**: Clear endpoint descriptions
+- **Examples**: Code examples for common use cases
+
+### User Documentation
+
+- **User Guides**: Step-by-step instructions for key features
+- **FAQ**: Common questions and troubleshooting
+- **Video Tutorials**: Screen recordings for complex workflows
+- **Help System**: In-app help and support resources
+
+## Integration Points
+
+### Smart Contract Functions
+
+- **submitClap(creator, amount, delegation)**: Submit TKI clap intent
+- **submitGift(creator, amount, delegation)**: Submit TK gift intent
+- **accrueFor(account)**: Claim pending interest for user
+- **mintTK(to, amount)**: Mint TK after successful payment
+- **getBalance(address, token)**: Query TK/TKI balances
+
+### Backend API Integration
+
+- **User Authentication**: JWT token management
+- **Intent Submission**: Create and track user intents
+- **Balance Queries**: Real-time balance updates
+- **Transaction History**: Complete audit trail
+
+### External Services
+
+- **MetaMask**: Primary wallet integration
+- **WalletConnect**: Alternative wallet connection
+- **IPFS**: Content storage for creator materials
+- **Analytics**: User behavior tracking and insights
+
+## Design Principles
+
+### User-Centric Design
+
+- **Simplicity**: Clear, intuitive interfaces for complex DeFi operations
+- **Accessibility**: WCAG 2.1 AA compliance for all users
+- **Mobile First**: Responsive design optimized for mobile devices
+- **Progressive Enhancement**: Core functionality works without JavaScript
+
+### Creator Economy Focus
+
+- **Creator Dashboard**: Comprehensive tools for content monetization
+- **Fan Engagement**: Easy ways to support favorite creators
+- **Transparency**: Clear visibility into earnings and conversions
+- **Community**: Social features for creator-fan interactions
+
+### Financial UX
+
+- **Real-time Updates**: Live balance and interest calculations
+- **Transaction Status**: Clear feedback on all blockchain operations
+- **Error Handling**: User-friendly error messages and recovery options
+- **Gas Optimization**: Smart gas estimation and transaction batching
+
+## Testing Strategy
+
+### Frontend Testing
+
+- **Unit Tests**: Individual component testing
+- **Integration Tests**: Component interaction testing
+- **E2E Tests**: Complete user workflow testing
+- **Visual Regression**: UI consistency testing
+
+### Contract Integration Testing
+
+- **Mock Contracts**: Local testing with contract mocks
+- **Testnet Testing**: Real blockchain testing on testnets
+- **Gas Testing**: Performance and optimization testing
+- **Security Testing**: Vulnerability assessment and penetration testing
+
+## Deployment & DevOps
+
+### Environment Management
+
+- **Development**: Local development with hot reload
+- **Staging**: Test environment with real contracts
+- **Production**: Live environment with mainnet contracts
+- **Feature Flags**: Gradual rollout of new features
+
+### CI/CD Pipeline
+
+- **Automated Testing**: Run tests on all pull requests
+- **Code Quality**: Automated linting and formatting
+- **Build Process**: Automated build and deployment
+- **Monitoring**: Performance and error monitoring
+
+## Performance Metrics
+
+### Key Performance Indicators
+
+- **Page Load Time**: < 3 seconds for initial load
+- **Transaction Success Rate**: > 95% successful transactions
+- **User Engagement**: > 70% daily active users
+- **Error Rate**: < 1% error rate for all operations
+
+### Monitoring & Analytics
+
+- **Real User Monitoring**: Performance tracking for actual users
+- **Error Tracking**: Comprehensive error logging and alerting
+- **User Analytics**: Behavior tracking and conversion optimization
+- **Blockchain Metrics**: Gas usage and transaction performance
+
+## Security Considerations
+
+### Frontend Security
+
+- **Input Sanitization**: Prevent XSS and injection attacks
+- **Authentication**: Secure JWT token handling
+- **Authorization**: Role-based access control
+- **Data Validation**: Client and server-side validation
+
+### Blockchain Security
+
+- **Transaction Signing**: Secure wallet integration
+- **Gas Estimation**: Prevent transaction failures
+- **Error Handling**: Graceful failure handling
+- **Audit Trail**: Complete transaction logging
+
+## Future Enhancements
+
+### Planned Features
+
+- **Multi-chain Support**: Cross-chain intent submission
+- **Advanced Delegation**: Time-locked and conditional delegations
+- **Creator Tiers**: Different conversion ratios based on performance
+- **Liquidity Pools**: Automated market making for TKI/TK pairs
+
+### Integration Opportunities
+
+- **Social Platforms**: Direct integration with content platforms
+- **DeFi Protocols**: Yield farming and liquidity provision
+- **NFT Marketplaces**: Creator tokenization and trading
+- **Gaming**: In-game creator support and rewards
+
+## Support & Community
+
+### Development Support
+
+- **Documentation**: Comprehensive technical documentation
+- **Code Examples**: Working examples for all major features
+- **Community Forum**: Developer community for questions and support
+- **Issue Tracking**: GitHub issues for bugs and feature requests
+
+### User Support
+
+- **Help Center**: Comprehensive user documentation
+- **Video Tutorials**: Step-by-step video guides
+- **Live Chat**: Real-time support for users
+- **Feedback System**: User feedback collection and analysis
+
+---
+
+## ERC-7710 Delegation System Architecture
+
+### Delegation Framework Integration
+
+The system now implements a comprehensive **ERC-7710 delegation framework** that enables users to create, store, and manage delegations for secure, permissionless transfers without requiring individual transaction signatures.
+
+#### Core Delegation Components
+
+- **Delegation Storage**: Delegations are stored on-chain with full metadata including delegator, delegatee, token, amount, nonce, deadline, signature, and revocation status
+- **Delegation Management**: Users can create, revoke, and track delegations with proper nonce management
+- **Intent References**: Intents now reference stored delegations by hash instead of storing raw delegation data
+- **Capacity Tracking**: Real-time tracking of delegated vs available balances for both TK and TKI tokens
+
+#### Delegation Workflow
+
+1. **Delegation Creation**: Users create delegations with ERC-7710 signatures and store them on-chain
+2. **Intent Submission**: Users submit intents referencing stored delegations
+3. **Validation**: System validates delegation exists, not revoked, and user has sufficient capacity
+4. **Approval**: AML/fraud detection approval process
+5. **Settlement**: Delegations are redeemed on-chain and tokens transferred
+6. **Completion**: Delegated amounts are released and intents marked settled
+
+### Updated Smart Contract Architecture
+
+#### RevenueController Enhancements
+
+- **Delegation Storage**: `mapping(bytes32 => Delegation) public delegations`
+- **Nonce Management**: `mapping(address => uint256) public delegationNonces`
+- **Balance Tracking**: `mapping(address => mapping(address => uint256)) public delegatedAmount`
+- **Capacity Functions**: `clapCapacity()`, `giftCapacity()`, `effectiveBalance()`
+
+#### New Functions
+
+```solidity
+// Delegation management
+function storeDelegation(address delegatee, address token, uint256 amount, uint256 deadline, bytes calldata signature) external returns (bytes32);
+function revokeDelegation(bytes32 delegationHash) external;
+function revokeDelegations(bytes32[] calldata delegationHashes) external onlyOwner;
+
+// Updated intent submission
+function submitClap(address creator, bytes32 delegationHash) external nonReentrant returns (uint256);
+function submitGift(address creator, bytes32 delegationHash) external nonReentrant returns (uint256);
+
+// Balance calculations
+function effectiveBalance(address account, address token) external view returns (uint256);
+function clapCapacity(address account) external view returns (uint256);
+function giftCapacity(address account) external view returns (uint256);
+```
+
+#### DelegationManager Interface
+
+```solidity
+interface IDelegationManager {
+    function redeemDelegations(
+        bytes[] calldata _permissionContexts,
+        bytes[] calldata _modes,
+        bytes[] calldata _executionCallDatas
+    ) external;
+
+    function getDelegationHash(Delegation calldata _delegation) external pure returns (bytes32);
+    function disabledDelegations(bytes32 _delegationHash) external view returns (bool);
+}
+```
+
+### Security & Compliance Features
+
+#### Delegation Security
+
+- **Revocation Support**: Users and admins can revoke delegations for security
+- **Expiration Handling**: Delegations have configurable deadlines
+- **Nonce Management**: Prevents replay attacks with incrementing nonces
+- **Capacity Validation**: Prevents over-delegation of tokens
+
+#### AML & Fraud Prevention
+
+- **Batch Revocation**: Admins can revoke multiple delegations for AML compliance
+- **Intent Approval**: All intents require approval before settlement
+- **Audit Trail**: Complete logging of delegation creation, revocation, and redemption
+
+### System Benefits
+
+#### User Experience
+
+- **Gas Efficiency**: Create delegation once, use multiple times
+- **Seamless UX**: No need to sign individual transactions for each clap/gift
+- **Transparency**: All delegations stored on-chain with full visibility
+- **Flexibility**: Support for both TK and TKI token delegations
+
+#### Technical Advantages
+
+- **Proper ERC-7710 Integration**: Full compliance with delegation standards
+- **On-chain Redemption**: Delegations properly redeemed during settlement
+- **Real-time Balance Tracking**: Accurate capacity calculations
+- **Batch Processing**: Efficient settlement of multiple delegations
+
+### Updated Data Models
+
+#### Delegation Structure (ERC-7710)
+
+```solidity
+struct Delegation {
+    address delegate;       // Address that can redeem the delegation
+    address delegator;      // User creating the delegation
+    bytes32 authority;      // Authority hash for delegation chain
+    Caveat[] caveats;       // Array of restrictions/conditions
+    uint256 salt;           // Random salt for uniqueness
+    bytes signature;        // ERC-7710 signature
+}
+
+struct Caveat {
+    address enforcer;       // Contract that enforces the caveat
+    bytes terms;            // Terms of the caveat
+    bytes args;             // Arguments for the caveat
+}
+```
+
+#### Updated Intent Structure
+
+```solidity
+struct Intent {
+    address from;           // Fan submitting the intent
+    address to;             // Creator receiving support
+    bytes32 delegationHash; // Reference to stored delegation
+    IntentKind kind;        // Clap (TKI) or Gift (TK)
+    uint64 createdAt;       // Timestamp of intent creation
+    bool approved;          // AML/fraud approval flag
+    bool settled;           // Execution status
+}
+```
+
+### Event System Updates
+
+#### New Events
+
+```solidity
+event DelegationStored(bytes32 indexed delegationHash, address indexed delegator, address indexed delegatee, address token, uint256 amount);
+event DelegationRevoked(bytes32 indexed delegationHash, address indexed revoker);
+event IntentSubmitted(uint256 indexed id, address indexed from, address indexed to, bytes32 delegationHash, IntentKind kind);
+```
+
+### Testing & Validation
+
+#### Test Coverage
+
+- **Delegation Management**: Creation, storage, and revocation of delegations
+- **Intent Submission**: Validation and capacity checking with delegation references
+- **Settlement Processing**: Delegation redemption and token transfers
+- **Balance Tracking**: Effective balance and capacity calculations
+- **Security Scenarios**: Revocation, expiration, and edge cases
+
+#### Mock Validator
+
+```solidity
+contract MockValidator is IDelegationValidator {
+    mapping(bytes32 => bool) public overrideValid;
+    mapping(bytes32 => bool) public redeemedDelegations;
+
+    function redeemDelegation(bytes calldata delegation) external returns (bool) {
+        bytes32 h = keccak256(delegation);
+        redeemedDelegations[h] = true;
+        return true;
+    }
+}
+```
+
+### Integration Requirements
+
+#### MetaMask Delegation Framework
+
+- **DelegationManager Integration**: Direct integration with MetaMask's DelegationManager
+- **ERC-7710 Compliance**: Full compliance with ERC-7710 delegation standards
+- **Caveat System**: Support for granular restrictions through caveat enforcers
+- **Delegation Redemption**: Proper on-chain redemption through DelegationManager
+- **Wallet UX**: Seamless delegation creation and management through MetaMask
+
+#### Backend API Updates
+
+- **Delegation Endpoints**: API support for delegation management
+- **Balance Queries**: Real-time effective balance calculations
+- **Intent Tracking**: Enhanced intent management with delegation references
+- **Event Monitoring**: Comprehensive delegation event tracking
+
+### Performance Considerations
+
+#### Gas Optimization
+
+- **Batch Operations**: Process multiple delegations in single transactions
+- **Lazy Evaluation**: Only update balances when necessary
+- **Efficient Storage**: Optimized data structures for delegation tracking
+- **Settlement Batching**: Group intent processing for gas efficiency
+
+#### Scalability
+
+- **Delegation Reuse**: Single delegation can be used for multiple intents
+- **Nonce Management**: Efficient nonce tracking for high-volume users
+- **Capacity Caching**: Optimized balance calculations
+- **Event Indexing**: Efficient off-chain delegation tracking
+
+### Future Enhancements
+
+#### Advanced Delegation Features
+
+- **Time-locked Delegations**: Delegations that activate at specific times
+- **Conditional Delegations**: Delegations with custom execution conditions
+- **Recurring Delegations**: Automatic delegation renewal
+- **Delegation Analytics**: Advanced tracking and reporting
+
+#### Multi-chain Support
+
+- **Cross-chain Delegations**: Delegations that work across multiple chains
+- **Bridge Integration**: Seamless delegation transfer between chains
+- **Unified Management**: Single interface for multi-chain delegations
+
+---
+
+**Remember**: This is a creator economy platform that needs to be accessible to both technical and non-technical users. The ERC-7710 delegation system provides a seamless user experience while maintaining the highest standards of security and compliance. Focus on creating intuitive interfaces that make complex DeFi operations simple and engaging. Always prioritize security, performance, and user experience in your implementations, especially when working with delegation features that require careful balance tracking and validation.
