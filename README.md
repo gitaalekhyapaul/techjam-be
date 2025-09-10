@@ -1,5 +1,15 @@
 # TikTok TechJam 2025 - Creator Economy Platform
 
+> [SUCCESS] All contracts verified successfully!
+>
+> [INFO] You can view the verified contracts on Etherscan:
+>
+> [INFO] TK: https://sepolia.basescan.org/address/0x330DaCeb47f0e34232e3B076d928d140604298E1
+>
+> [INFO] TKI: https://sepolia.basescan.org/address/0xFe867f41a953f9C7C7FeB027717D50fcb9767291
+>
+> [INFO] RevenueController: https://sepolia.basescan.org/address/0x1a9C2C1EA9F9bE28Bd90a9D10e627810E65a1Da5
+
 ## 🎯 Project Overview
 
 TikTok TechJam 2025 is a revolutionary creator economy platform that combines **interest-bearing stablecoins**, **social engagement tokens**, and **delegated transfers** to create a fair and efficient system for content creators and their supporters. The platform enables users to earn interest on their deposits while supporting creators through innovative "clap" and "gift" mechanisms.
